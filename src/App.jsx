@@ -1,14 +1,27 @@
-import React, { useState, useMemo } from 'react';
-import { Box, Layers, Zap, Upload, CheckCircle2, Cuboid, X, Palette, BarChart3, Package, CheckSquare, Search, BrainCircuit, Target, AlertOctagon, Lightbulb, Hexagon, Factory } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Box, Layers, Zap, Upload, CheckCircle2, Cuboid, X, Palette, BarChart3, Package, CheckSquare, Search, BrainCircuit, Target, AlertOctagon, Lightbulb, Hexagon, Factory, RefreshCw } from 'lucide-react';
 import Papa from 'papaparse';
 import _ from 'lodash';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Text, Edges, ContactShadows } from '@react-three/drei';
 
-// --- PALETAS DE COLORES (Adaptado a tonos más industriales) ---
-const COLORES_SKU = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e', '#84cc16'];
-const COLORES_FORMATO = { 'BIN (1040L)': '#8b5cf6', 'TAMBOR (208L)': '#f59e0b', 'BALDE (19L)': '#10b981', 'CAJA 5L': '#3b82f6', 'CAJA 4L': '#06b6d4', 'CAJA 1L': '#ef4444', 'OTRO': '#64748b' };
+// ============================================================================
+// PARTE 1: CONFIGURACIÓN, CONSTANTES Y MOTOR PREDICTIVO (LUB-AI)
+// ============================================================================
 
+// --- PALETAS DE COLORES (Diseño Industrial) ---
+const COLORES_SKU = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e', '#84cc16'];
+const COLORES_FORMATO = { 
+  'BIN (1040L)': '#8b5cf6', 
+  'TAMBOR (208L)': '#f59e0b', 
+  'BALDE (19L)': '#10b981', 
+  'CAJA 5L': '#3b82f6', 
+  'CAJA 4L': '#06b6d4', 
+  'CAJA 1L': '#ef4444', 
+  'OTRO': '#64748b' 
+};
+
+// Función helper para clasificar formatos
 const getFormato = (descripcion) => {
   if (!descripcion) return 'OTRO';
   const desc = descripcion.toLowerCase();
@@ -22,17 +35,13 @@ const getFormato = (descripcion) => {
 };
 
 // --- MOTOR PREDICTIVO (LUB-AI INSIGHTS) ---
+// Mejorado para entender la nueva estructura U1 (Frente) / U2 (Fondo)
 const generarInsights = (maestro, lx02) => {
   const insights = [];
-  const invProcesado = lx02.map(p => ({
-    ...p,
-    Cantidad_Total: parseFloat(p.Cantidad_Total?.toString().replace(',', '.') || 0),
-    Nivel: parseInt(p.Ubicacion?.split('-')[2] || 0)
-  }));
+  const invPorMaterial = _.groupBy(lx02, 'Material');
+  const invPorUbicacion = _.groupBy(lx02, 'Ubicacion');
 
-  const invPorMaterial = _.groupBy(invProcesado, 'Material');
-  const invPorUbicacion = _.groupBy(invProcesado, 'Ubicacion');
-
+  // Insight 1: Compactación (Optimización de espacio)
   Object.entries(invPorMaterial).forEach(([material, pallets]) => {
     const parciales = pallets.filter(p => p.Cantidad_Total > 0 && p.Cantidad_Total < 100);
     if (parciales.length > 1) {
@@ -48,44 +57,64 @@ const generarInsights = (maestro, lx02) => {
     }
   });
 
+  // Insight 2: Riesgo Operativo de Doble Manejo (Validación Frente-Fondo)
   maestro.forEach(ubi => {
     const palletsEnUbi = invPorUbicacion[ubi.Ubicacion] || [];
-    if (ubi.Tipo_Profundidad === 'Doble' && parseInt(ubi.Posicion) === 1 && palletsEnUbi.length > 0) {
-      const ubiFondo = `${ubi.Pasillo}-${String(ubi.Rack).padStart(2, '0')}-${ubi.Nivel}-2`;
-      const palletsAtras = invPorUbicacion[ubiFondo] || [];
-      if (palletsAtras.length > 0 && palletsEnUbi[0].Material !== palletsAtras[0].Material) {
-        insights.push({
-          tipo: 'RIESGO OPERATIVO', nivel: 'CRÍTICO', titulo: `Doble Manejo Inminente en ${ubi.Ubicacion}`,
-          mensaje: `El pallet de [${palletsEnUbi[0].Material}] bloquea el acceso a [${palletsAtras[0].Material}] en el fondo. Requiere reubicación preventiva.`,
-          accion: `Reubicar Frente`,
-          color: 'text-red-400', bg: 'bg-red-600', icon: <AlertOctagon size={24} />
-        });
+    
+    // Si la ubicación actual es U1 (Frente) y está ocupada
+    if (ubi.TipoUbi === 'U1' && palletsEnUbi.length > 0) {
+      
+      // Buscar la ubicación U2 (Fondo) que corresponda exactamente al mismo pasillo, rack y nivel
+      const ubiFondoObj = maestro.find(m => m.Pasillo === ubi.Pasillo && m.Rack === ubi.Rack && m.Nivel === ubi.Nivel && m.TipoUbi === 'U2');
+      
+      if (ubiFondoObj) {
+          const palletsAtras = invPorUbicacion[ubiFondoObj.Ubicacion] || [];
+          
+          // Si el fondo está ocupado y el material es distinto al del frente = Problema
+          if (palletsAtras.length > 0 && palletsEnUbi[0].Material !== palletsAtras[0].Material) {
+            insights.push({
+              tipo: 'RIESGO OPERATIVO', nivel: 'CRÍTICO', titulo: `Doble Manejo Inminente en ${ubi.Ubicacion}`,
+              mensaje: `El pallet de [${palletsEnUbi[0].Material}] (Frente/U1) bloquea el acceso a [${palletsAtras[0].Material}] (Fondo/U2). Requiere reubicación preventiva.`,
+              accion: `Reubicar Frente`,
+              color: 'text-red-400', bg: 'bg-red-600', icon: <AlertOctagon size={24} />
+            });
+          }
       }
     }
   });
 
+  // Ordenar para que los de nivel CRÍTICO aparezcan primero
   return _.orderBy(insights, i => i.nivel === 'CRÍTICO' ? 0 : 1);
 };
+// ============================================================================
+// PARTE 2: GEMELO DIGITAL 3D (RENDERIZADO Y LÓGICA ESPACIAL)
+// ============================================================================
 
-// --- COMPONENTE 3D CORPORATIVO ---
 const Warehouse3D = ({ maestro, lx02, modoColor, colorMapSKU, onSelectPallet, terminoBusqueda }) => {
-  const posPasillo = { 'A': -12, 'B': 0, 'C': 12 };
   const searchNormalized = terminoBusqueda?.toLowerCase().trim();
   const modoBusquedaActivo = searchNormalized && searchNormalized.length > 1;
 
+  // Calculamos cuántos pasillos existen para centrar la cámara automáticamente
+  const pasillosUnicos = _.uniq(maestro.map(m => m.Pasillo));
+  const maxPasillos = pasillosUnicos.length > 0 ? Math.max(...pasillosUnicos) : 3;
+  const centroX = (maxPasillos * 12) / 2;
+
   return (
-    <Canvas camera={{ position: [0, 25, 45], fov: 40 }}>
+    <Canvas camera={{ position: [centroX, 30, 45], fov: 45 }}>
       <ambientLight intensity={0.7} />
       <directionalLight position={[15, 30, 15]} intensity={1} castShadow />
-      <OrbitControls makeDefault maxPolarAngle={Math.PI / 2 + 0.05} />
-      <ContactShadows opacity={0.6} scale={70} blur={2.5} far={15} color="#000000" />
+      <OrbitControls makeDefault target={[centroX, 0, 0]} maxPolarAngle={Math.PI / 2 + 0.05} />
+      <ContactShadows opacity={0.6} scale={150} blur={2.5} far={15} color="#000000" />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.8, 0]}>
-        <planeGeometry args={[70, 60]} />
+      {/* Piso del almacén (Suelo de la planta) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[centroX, -0.8, -10]}>
+        <planeGeometry args={[150, 150]} />
         <meshStandardMaterial color="#0f172a" />
       </mesh>
 
+      {/* Renderizado de cada ubicación del Maestro */}
       {maestro.map((ubi, i) => {
+        // Filtrar qué pallets están en esta ubicación
         const palletsEnUbi = lx02.filter(p => p.Ubicacion === ubi.Ubicacion);
         const ocupado = palletsEnUbi.length > 0;
         
@@ -93,6 +122,7 @@ const Warehouse3D = ({ maestro, lx02, modoColor, colorMapSKU, onSelectPallet, te
         let opacidadGeneral = 1;
         let colorBorde = "#000000";
 
+        // Lógica de Buscador Visual
         if (modoBusquedaActivo) {
             if (ocupado) {
                 matchBusqueda = palletsEnUbi.some(p => 
@@ -100,17 +130,36 @@ const Warehouse3D = ({ maestro, lx02, modoColor, colorMapSKU, onSelectPallet, te
                     p.Descripcion?.toLowerCase().includes(searchNormalized) ||
                     p.Lote?.toLowerCase().includes(searchNormalized)
                 );
-                // Highlight Rojo ExxonMobil para la búsqueda
+                // Si hace match, se ilumina en rojo y 100% opacidad. Si no, se hace transparente.
                 if (matchBusqueda) { opacidadGeneral = 1; colorBorde = "#ef4444"; } 
                 else { opacidadGeneral = 0.10; colorBorde = "#334155"; }
-            } else { opacidadGeneral = 0.10; }
+            } else { 
+                opacidadGeneral = 0.10; 
+            }
         }
 
-        const x = posPasillo[ubi.Pasillo] + (ubi.Posicion * 1.35); 
-        const y = (ubi.Nivel * 1.6) - 0.75; 
-        let z = (ubi.Rack * 3) - 15; 
-        if (ubi.Tipo_Profundidad === 'Doble' && ubi.Posicion === 2) z -= 1.35;
+        // --------------------------------------------------------------------
+        // LÓGICA DE COORDENADAS: ZIG-ZAG y U1/U2
+        // --------------------------------------------------------------------
+        const baseX = ubi.Pasillo * 12; // 12 metros de separación entre cada pasillo
+        
+        // ZIG ZAG: Impares a la izquierda (-1), Pares a la derecha (1)
+        const esImpar = ubi.Rack % 2 !== 0; 
+        const direccionX = esImpar ? -1 : 1; 
 
+        // Profundidad: U1 está a 1.2m del centro. U2 suma 1.2m extra hacia adentro.
+        const separacionPasillo = 1.2;
+        const ajusteProfundidad = ubi.TipoUbi === 'U2' ? 1.2 : 0;
+        
+        // Coordenadas finales X, Y, Z
+        const x = baseX + (direccionX * (separacionPasillo + ajusteProfundidad));
+        const y = (ubi.Nivel * 1.6) - 0.75; 
+        
+        // Math.ceil agrupa Rack 1 y 2 en el mismo avance Z. Rack 3 y 4 en el siguiente, etc.
+        const z = - (Math.ceil(ubi.Rack / 2) * 1.35) + 15; 
+        // --------------------------------------------------------------------
+
+        // Asignación de Color
         let colorCarga = '#334155';
         if (ocupado) {
           if (modoColor === 'formato') {
@@ -118,39 +167,56 @@ const Warehouse3D = ({ maestro, lx02, modoColor, colorMapSKU, onSelectPallet, te
             colorCarga = COLORES_FORMATO[formato] || COLORES_FORMATO['OTRO'];
           } else {
             const skus = _.uniq(palletsEnUbi.map(p => p.Material));
+            // Si hay más de 1 SKU mezclado en la ubicación, se pinta de blanco para alertar
             colorCarga = skus.length > 1 ? '#ffffff' : colorMapSKU[skus[0]];
           }
         }
 
         return (
           <group key={i}>
-            <mesh position={[x, y - 0.55, z + 0.45]}><boxGeometry args={[1.25, 0.1, 0.1]} /><meshStandardMaterial color="#ea580c" transparent opacity={opacidadGeneral} /></mesh>
-            <mesh position={[x, y - 0.55, z - 0.45]}><boxGeometry args={[1.25, 0.1, 0.1]} /><meshStandardMaterial color="#ea580c" transparent opacity={opacidadGeneral} /></mesh>
-            {ubi.Nivel === 1 && (
-              <>
-                <mesh position={[x - 0.65, 3, z + 0.45]}><boxGeometry args={[0.08, 7.5, 0.08]} /><meshStandardMaterial color="#1e3a8a" transparent opacity={opacidadGeneral} /></mesh>
-                <mesh position={[x - 0.65, 3, z - 0.45]}><boxGeometry args={[0.08, 7.5, 0.08]} /><meshStandardMaterial color="#1e3a8a" transparent opacity={opacidadGeneral} /></mesh>
-              </>
-            )}
+            {/* Viga soporte de la ubicación (Naranja Industrial) */}
+            <mesh position={[x, y - 0.55, z]}>
+              <boxGeometry args={[1.1, 0.05, 1]} />
+              <meshStandardMaterial color="#ea580c" transparent opacity={opacidadGeneral} />
+            </mesh>
+            
             {ocupado && (
-              <group onClick={(e) => { e.stopPropagation(); if(opacidadGeneral > 0.5) onSelectPallet({ ubi, pallets: palletsEnUbi }); }} onPointerOver={(e) => { e.stopPropagation(); if(opacidadGeneral > 0.5) document.body.style.cursor = 'pointer'; }} onPointerOut={() => { document.body.style.cursor = 'auto'; }}>
-                <mesh position={[x, y - 0.45, z]}><boxGeometry args={[1.1, 0.1, 1]} /><meshStandardMaterial color="#8b5a2b" transparent opacity={opacidadGeneral} /></mesh>
-                {/* Ajustamos el material de la caja para que el borde rojo resalte más */}
-                <mesh position={[x, y + 0.05, z]}><boxGeometry args={[1.05, 0.9, 0.95]} /><meshStandardMaterial color={colorCarga} roughness={0.3} transparent opacity={opacidadGeneral} /><Edges scale={matchBusqueda ? 1.05 : 1.01} threshold={15} color={colorBorde} /></mesh>
+              <group 
+                onClick={(e) => { e.stopPropagation(); if(opacidadGeneral > 0.5) onSelectPallet({ ubi, pallets: palletsEnUbi }); }} 
+                onPointerOver={(e) => { e.stopPropagation(); if(opacidadGeneral > 0.5) document.body.style.cursor = 'pointer'; }} 
+                onPointerOut={() => { document.body.style.cursor = 'auto'; }}
+              >
+                {/* Base del Pallet (Color Madera) */}
+                <mesh position={[x, y - 0.45, z]}>
+                  <boxGeometry args={[1.05, 0.15, 1.05]} />
+                  <meshStandardMaterial color="#8b5a2b" transparent opacity={opacidadGeneral} />
+                </mesh>
+                
+                {/* Carga del producto (Caja a color) */}
+                <mesh position={[x, y + 0.1, z]}>
+                  <boxGeometry args={[1.0, 0.95, 1.0]} />
+                  <meshStandardMaterial color={colorCarga} roughness={0.3} transparent opacity={opacidadGeneral} />
+                  <Edges scale={matchBusqueda ? 1.05 : 1.01} threshold={15} color={colorBorde} />
+                </mesh>
               </group>
             )}
           </group>
         );
       })}
 
-      <Text position={[-12, 8.5, 17]} fontSize={1.5} color="#3b82f6" anchorX="center" fontWeight="black">PASILLO A</Text>
-      <Text position={[0, 8.5, 17]} fontSize={1.5} color="#3b82f6" anchorX="center" fontWeight="black">PASILLO B (DOBLE)</Text>
-      <Text position={[12, 8.5, 17]} fontSize={1.5} color="#3b82f6" anchorX="center" fontWeight="black">PASILLO C</Text>
+      {/* Etiquetas de texto para indicar el número de cada Pasillo */}
+      {pasillosUnicos.map((pasilloNum, idx) => (
+         <Text key={idx} position={[pasilloNum * 12, 8.5, 17]} fontSize={1.5} color="#3b82f6" anchorX="center" fontWeight="black">
+            PASILLO {pasilloNum}
+         </Text>
+      ))}
     </Canvas>
   );
 };
+// ============================================================================
+// PARTE 3: APLICACIÓN PRINCIPAL (ESTADOS, CONEXIÓN EN VIVO Y UI)
+// ============================================================================
 
-// --- APLICACIÓN PRINCIPAL ---
 export default function App() {
   const [maestro, setMaestro] = useState([]);
   const [lx02, setLx02] = useState([]);
@@ -159,14 +225,90 @@ export default function App() {
   const [terminoBusqueda, setTerminoBusqueda] = useState(''); 
   const [palletSeleccionado, setPalletSeleccionado] = useState(null);
   const [aiInsights, setAiInsights] = useState([]);
+  
+  const [cargando, setCargando] = useState(true);
+  const [errorRed, setErrorRed] = useState(null);
 
-  const parseMaestro = (e) => Papa.parse(e.target.files[0], { header: true, skipEmptyLines: true, complete: (res) => setMaestro(res.data.filter(r => r.Pasillo)) });
-  const parseLx02 = (e) => Papa.parse(e.target.files[0], { header: true, skipEmptyLines: true, complete: (res) => {
-    const data = res.data.filter(r => r.Material);
-    setLx02(data);
-    setAiInsights(generarInsights(maestro, data)); 
-  }});
+  // URLs configuradas directamente con tus links de Google Sheets
+  const URL_MAESTRO = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTb7DSkAa1tose_BdEn991i-yJ2szD_52iAgDbPA9I7c2NJ-YHTlrGh5_Ds1KXr__cbxeoqZuH2ih9P/pub?output=csv";
+  const URL_LX02 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRvQfrHdm_x6L8pkWWRGAOTWMBfOs7p0SoLUcbx_2QUKmoweBdJ6hGOQErmfI-gkWofZnjUyVORevmR/pub?gid=673437504&single=true&output=csv";
 
+  // Función para procesar y filtrar el maestro según tus reglas
+  const procesarMaestro = (dataRaw) => {
+    const maestroFiltrado = dataRaw.filter(row => {
+      const tipoUbi = row['Tipo de ubicació'] || row['Tipo de ubicación'] || '';
+      const bloqueoSalida = row['Bloqueo de salid'] || row['Bloqueo de salida'] || '';
+      const bloqueoEntrada = row['Bloqueo de entradas'] || row['Bloqueo de entrada'] || '';
+
+      // Regla 1: Solo U1 y U2
+      const esU1oU2 = tipoUbi.trim().toUpperCase() === 'U1' || tipoUbi.trim().toUpperCase() === 'U2';
+      // Regla 2: Sin 'X' (o 'x') en bloqueos
+      const noBloqueado = bloqueoSalida.trim().toUpperCase() !== 'X' && bloqueoEntrada.trim().toUpperCase() !== 'X';
+
+      return esU1oU2 && noBloqueado;
+    }).map(row => {
+      const ubicacion = row['Ubicación'] || row['Ubicacion'] || '';
+      const partes = ubicacion.split('-'); // Ej: "01-02-01"
+      
+      return {
+        ...row,
+        Ubicacion: ubicacion,
+        Pasillo: parseInt(partes[0] || 1), // "01" -> 1
+        Rack: parseInt(partes[1] || 1),    // "02" -> 2
+        Nivel: parseInt(partes[2] || 1),   // "01" -> 1
+        TipoUbi: tipoUbi.trim().toUpperCase() // Guardamos si es U1 o U2 para el 3D
+      };
+    });
+
+    setMaestro(maestroFiltrado);
+  };
+
+  // Hook para cargar los datos al iniciar la aplicación
+  const cargarDatosDesdeNube = () => {
+    setCargando(true);
+    setErrorRed(null);
+
+    // 1. Cargar Maestro
+    Papa.parse(URL_MAESTRO, {
+      download: true, header: true, skipEmptyLines: true,
+      complete: (resMaestro) => {
+        procesarMaestro(resMaestro.data);
+        
+        // 2. Cargar LX02 justo después
+        Papa.parse(URL_LX02, {
+          download: true, header: true, skipEmptyLines: true,
+          complete: (resLx02) => {
+            // Asegurarnos de usar los nombres de columnas de tu Sheets
+            const dataLx02 = resLx02.data.filter(r => r.Material).map(p => ({
+                ...p,
+                Ubicacion: p.Ubicación || p.Ubicacion, // Por si viene con tilde
+                Cantidad_Total: parseFloat(p['Stock disponible']?.toString().replace(',', '.') || p.Cantidad_Total?.toString().replace(',', '.') || 0)
+            }));
+            
+            setLx02(dataLx02);
+            setCargando(false);
+          },
+          error: () => { setErrorRed("Error cargando LX02. Revisa la URL."); setCargando(false); }
+        });
+      },
+      error: () => { setErrorRed("Error cargando Maestro. Revisa la URL."); setCargando(false); }
+    });
+  };
+
+  // Ejecutar carga automática al abrir la web
+  useEffect(() => {
+    cargarDatosDesdeNube();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Actualizar Insights de IA cuando cambian los datos
+  useEffect(() => {
+      if(maestro.length > 0 && lx02.length > 0) {
+          setAiInsights(generarInsights(maestro, lx02));
+      }
+  }, [maestro, lx02]);
+
+  // Generador de colores consistentes por Material
   const colorMapSKU = useMemo(() => {
     const unicos = _.uniq(lx02.map(p => p.Material));
     const map = {};
@@ -174,24 +316,22 @@ export default function App() {
     return map;
   }, [lx02]);
 
+  // Cálculos de KPI de ocupación
   const KPIs = useMemo(() => {
     const totalPosiciones = maestro.length;
     const ocupadas = new Set(lx02.map(p => p.Ubicacion)).size;
     const libres = totalPosiciones - ocupadas;
     const tasa = totalPosiciones > 0 ? ((ocupadas / totalPosiciones) * 100).toFixed(1) : 0;
-    const totalUnidades = _.sumBy(lx02, p => parseFloat(p.Cantidad_Total?.toString().replace(',', '.') || 0));
-    return { totalPosiciones, ocupadas, libres, tasa, totalUnidades };
+    return { totalPosiciones, ocupadas, libres, tasa };
   }, [maestro, lx02]);
 
   return (
     <div className="h-screen bg-[#020617] text-white flex flex-col overflow-hidden font-sans relative">
       
-      {/* HEADER CORPORATIVO: COPEC & EXXONMOBIL */}
+      {/* HEADER CORPORATIVO */}
       <header className="bg-slate-900/90 backdrop-blur-md p-4 lg:p-5 flex justify-between items-center border-b-2 border-blue-600/50 shadow-[0_4px_30px_rgba(37,99,235,0.15)] shrink-0 z-10">
         <div className="flex items-center gap-6">
-          {/* ZONA DE LOGOS (Placeholder listos para reemplazar con imágenes reales) */}
           <div className="flex gap-3 border-r border-slate-700 pr-6">
-             {/* Para usar logos reales, borra el texto y usa: <img src="/logo-copec.png" className="h-8" /> */}
              <div className="h-8 px-3 bg-white rounded flex items-center justify-center text-blue-700 font-black tracking-tighter text-sm italic">COPEC</div>
              <div className="h-8 px-3 bg-white rounded flex items-center justify-center text-red-600 font-black tracking-tighter text-sm">ExxonMobil</div>
           </div>
@@ -207,21 +347,27 @@ export default function App() {
           </div>
         </div>
 
+        {/* BOTÓN DE SINCRONIZACIÓN EN LA NUBE */}
         <div className="flex gap-3">
-            <label className={`cursor-pointer px-4 lg:px-6 py-2.5 rounded-xl text-xs font-black tracking-widest transition-all ${maestro.length ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'}`}>
-                {maestro.length ? 'MAESTRO OK' : '1. SUBIR MAESTRO'}
-                <input type="file" className="hidden" onChange={parseMaestro} accept=".csv" />
-            </label>
-            <label className={`cursor-pointer px-4 lg:px-6 py-2.5 rounded-xl text-xs font-black tracking-widest transition-all ${lx02.length ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-blue-600 text-white hover:bg-blue-500 shadow-[0_0_15px_rgba(37,99,235,0.4)]'}`}>
-                {lx02.length ? 'LX02 OK' : '2. SUBIR LX02'}
-                <input type="file" className="hidden" onChange={parseLx02} accept=".csv" />
-            </label>
+            {cargando ? (
+                <div className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black tracking-widest bg-slate-800 text-blue-400 border border-blue-500/30 animate-pulse">
+                    <RefreshCw className="animate-spin" size={16}/> SINCRONIZANDO CON SAP...
+                </div>
+            ) : errorRed ? (
+                <div className="px-6 py-2.5 rounded-xl text-xs font-black tracking-widest bg-red-900/50 text-red-400 border border-red-500/30">
+                    {errorRed}
+                </div>
+            ) : (
+                <button onClick={cargarDatosDesdeNube} className="flex items-center gap-2 cursor-pointer px-4 lg:px-6 py-2.5 rounded-xl text-xs font-black tracking-widest transition-all bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 shadow-lg hover:scale-105 active:scale-95">
+                    <CheckCircle2 size={16}/> DATOS ACTUALIZADOS (RECARGAR)
+                </button>
+            )}
         </div>
       </header>
 
       <div className="flex-1 relative bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#020617] to-black overflow-hidden">
         
-        {maestro.length > 0 && lx02.length > 0 && (
+        {!cargando && maestro.length > 0 && lx02.length > 0 && (
           <>
             {/* SWITCH CENTRAL ESTILO CORPORATIVO */}
             <div className="absolute top-6 left-1/2 -translate-x-1/2 z-30 flex bg-slate-900/80 backdrop-blur-xl p-1.5 rounded-2xl border border-slate-700/50 shadow-2xl">
@@ -233,7 +379,7 @@ export default function App() {
 
             {vista === '3d' ? (
                 <>
-                    {/* RADAR INMERSIVO */}
+                    {/* RADAR INMERSIVO (BUSCADOR) */}
                     <div className="absolute top-6 left-6 z-20 w-80">
                         <div className="relative group">
                             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-400 transition-colors" size={20} />
@@ -263,9 +409,10 @@ export default function App() {
                         </div>
                     </div>
 
+                    {/* COMPONENTE 3D (PARTE 2) */}
                     <Warehouse3D maestro={maestro} lx02={lx02} modoColor={modoColor} colorMapSKU={colorMapSKU} onSelectPallet={setPalletSeleccionado} terminoBusqueda={terminoBusqueda} />
 
-                    {/* TARJETA PALLET */}
+                    {/* TARJETA PALLET (POP-UP AL HACER CLIC) */}
                     {palletSeleccionado && (
                         <div className="absolute bottom-8 right-6 bg-slate-900/90 backdrop-blur-xl p-6 rounded-3xl border border-blue-500/30 shadow-[0_10px_40px_rgba(0,0,0,0.5)] w-80 z-30 animate-fade-in">
                             <div className="flex justify-between items-center mb-5 border-b border-slate-700 pb-3">
@@ -275,7 +422,7 @@ export default function App() {
                             <div className="max-h-[50vh] overflow-y-auto pr-2 space-y-3 custom-scrollbar">
                                 {palletSeleccionado.pallets.map((p, i) => (
                                     <div key={i} className="bg-slate-800/80 p-4 rounded-2xl border border-slate-700/50 hover:border-blue-500/50 transition-colors">
-                                        <p className="font-bold text-white text-xs leading-snug mb-2">{p.Descripcion}</p>
+                                        <p className="font-bold text-white text-xs leading-snug mb-2">{p['Texto breve de n'] || p.Descripcion || 'SIN DESCRIPCIÓN'}</p>
                                         <p className="text-[10px] text-blue-400 font-mono font-bold mb-3 tracking-wider">SKU: {p.Material}</p>
                                         <div className="flex justify-between items-end bg-slate-900/50 p-2.5 rounded-xl border border-slate-800">
                                             <div className="flex flex-col">
@@ -284,7 +431,7 @@ export default function App() {
                                             </div>
                                             <div className="text-right">
                                                 <span className="font-black text-xl text-emerald-400">{p.Cantidad_Total}</span>
-                                                <span className="text-[10px] text-slate-500 font-bold ml-1">{p.Unidad}</span>
+                                                <span className="text-[10px] text-slate-500 font-bold ml-1">{p['Unidad medida b'] || p.Unidad || 'UN'}</span>
                                             </div>
                                         </div>
                                     </div>
@@ -319,7 +466,7 @@ export default function App() {
                                 <div className="text-center p-12 border-2 border-dashed border-slate-700 rounded-3xl">
                                     <CheckCircle2 size={48} className="mx-auto text-emerald-500 mb-4" />
                                     <p className="text-xl font-bold text-white">Salud del Inventario: 100%</p>
-                                    <p className="text-slate-400">La Planta está operando bajo estándares óptimos. No se detectan bloqueos ni quiebres.</p>
+                                    <p className="text-slate-400">La Planta está operando bajo estándares óptimos. No se detectan bloqueos frente-fondo (U1/U2).</p>
                                 </div>
                             )}
                         </div>
@@ -329,12 +476,12 @@ export default function App() {
                                 <h3 className="text-sm font-black flex items-center gap-2 mb-5 text-red-400 uppercase tracking-widest"><Lightbulb size={18}/> WMS Best Practices</h3>
                                 <div className="space-y-4">
                                     <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-800">
-                                        <p className="text-xs font-bold text-white mb-1.5 flex items-center gap-2"><span className="w-1.5 h-1.5 bg-red-500 rounded-full"></span> Regla del Picking</p>
-                                        <p className="text-[11px] text-slate-400 leading-relaxed">Garantiza que los SKUs Clase A tengan SIEMPRE pallets disponibles en Nivel 1. El tiempo de grúa merma el rendimiento del equipo.</p>
+                                        <p className="text-xs font-bold text-white mb-1.5 flex items-center gap-2"><span className="w-1.5 h-1.5 bg-red-500 rounded-full"></span> Regla del Frente-Fondo</p>
+                                        <p className="text-[11px] text-slate-400 leading-relaxed">El sistema ahora monitorea que las posiciones U2 no queden bloqueadas por SKUs diferentes en U1, evitando el doble manejo de grúa.</p>
                                     </div>
                                     <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-800">
-                                        <p className="text-xs font-bold text-white mb-1.5 flex items-center gap-2"><span className="w-1.5 h-1.5 bg-red-500 rounded-full"></span> Doble Profundidad</p>
-                                        <p className="text-[11px] text-slate-400 leading-relaxed">Evita colocar lotes distintos en el pasillo B (Doble). El LIFO forzado causará quiebres por vencimiento si no se rota el fondo.</p>
+                                        <p className="text-xs font-bold text-white mb-1.5 flex items-center gap-2"><span className="w-1.5 h-1.5 bg-red-500 rounded-full"></span> Patrón Zig-Zag</p>
+                                        <p className="text-[11px] text-slate-400 leading-relaxed">El 3D renderiza los racks impares a la izquierda y los pares a la derecha, tal como en el layout físico de la línea 208.</p>
                                     </div>
                                 </div>
                             </div>
