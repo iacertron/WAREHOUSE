@@ -94,4 +94,82 @@ const detectarFragmentacion = ({ porMaterial }) => {
   return insights;
 };
 
-// ---------------------------------------------
+// ---------------------------------------------------------------------------
+// Detector 2 — Doble manejo U1/U2 (bloqueo frente-fondo)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detecta posiciones U1 ocupadas por un SKU diferente al U2 del mismo slot,
+ * lo que fuerza un doble movimiento de grúa para acceder al fondo.
+ *
+ * Condición: mismo pasillo + rack + nivel, tipoUbi U1 vs U2, SKUs distintos.
+ *
+ * @param {import('./parsers').MaestroRow[]} maestro
+ * @param {ReturnType<typeof buildIndices>} indices
+ * @returns {Insight[]}
+ */
+const detectarDobleManejo = (maestro, { porUbicacion }) => {
+  const insights = [];
+
+  const posicionesU1 = maestro.filter((m) => m.tipoUbi === 'U1');
+
+  posicionesU1.forEach((u1) => {
+    const palletsFrente = porUbicacion[u1.ubicacion];
+    if (!palletsFrente?.length) return;
+
+    // Busca el U2 correspondiente al mismo slot físico
+    const u2 = maestro.find(
+      (m) =>
+        m.pasillo === u1.pasillo &&
+        m.rack    === u1.rack    &&
+        m.nivel   === u1.nivel   &&
+        m.tipoUbi === 'U2'
+    );
+    if (!u2) return;
+
+    const palletsFondo = porUbicacion[u2.ubicacion];
+    if (!palletsFondo?.length) return;
+
+    const skuFrente = palletsFrente[0].material;
+    const skuFondo  = palletsFondo[0].material;
+    if (skuFrente === skuFondo) return; // mismo SKU = sin riesgo
+
+    insights.push({
+      tipo:    'RIESGO OPERATIVO',
+      nivel:   'CRÍTICO',
+      titulo:  `Doble Manejo Inminente en ${u1.ubicacion}`,
+      mensaje:
+        `[${skuFrente}] en frente (${u1.ubicacion}) bloquea el acceso a ` +
+        `[${skuFondo}] en fondo (${u2.ubicacion}). ` +
+        `Cualquier picking del fondo requiere mover primero el pallet del frente.`,
+      accion: `Reubicar ${u1.ubicacion}`,
+    });
+  });
+
+  return insights;
+};
+
+// ---------------------------------------------------------------------------
+// API pública
+// ---------------------------------------------------------------------------
+
+/**
+ * Ejecuta todos los detectores y retorna insights ordenados por criticidad.
+ * CRÍTICO primero, ALTO_IMPACTO después.
+ *
+ * @param {import('./parsers').MaestroRow[]} maestro
+ * @param {import('./parsers').Lx02Row[]}    lx02
+ * @returns {Insight[]}
+ */
+export const generarInsights = (maestro, lx02) => {
+  if (!maestro.length || !lx02.length) return [];
+
+  const indices = buildIndices(maestro, lx02);
+
+  const todos = [
+    ...detectarDobleManejo(maestro, indices),
+    ...detectarFragmentacion(indices),
+  ];
+
+  return _.orderBy(todos, (i) => (i.nivel === 'CRÍTICO' ? 0 : 1));
+};
